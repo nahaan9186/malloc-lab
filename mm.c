@@ -68,10 +68,13 @@ team_t team = {
 #define NEXT_BLKP(bp) ( (char *)(bp) + GET_SIZE(((char *)(bp) - WSIZE)) )
 #define PREV_BLKP(bp) ( (char *)(bp) - GET_SIZE(((char *)(bp) - DSIZE)) )
 
+#define GET_SUCC(bp) (*(void **)((char *)(bp) + WSIZE)) // 다음 가용 블록의 주소
+#define GET_PRED(bp) (*(void **)(bp))                   // 이전 가용 블록의 주소
+
 static void *extend_heap(size_t words);  // Prototype declaration
 static void *coalesce(void *bp);  // Prototype declaration
 
-
+static void *free_listp = NULL; // free list head - 가용리스트 시작부분
 
 /* 
  * mm_init - initialize the malloc package.
@@ -136,24 +139,33 @@ static void *extend_heap(size_t words)
 
 int mm_init(void)
 {
-    // Create the initial empty heap
-    char *heap_listp;
-    if ((heap_listp = mem_sbrk(4*WSIZE)) == (void *)-1)
-        // 4워드 크기의 힙 생성, heap_listp에 힙의 시작 주소값 할당
+    // 초기 힙 생성
+    if ((free_listp = mem_sbrk(8 * WSIZE)) == (void *)-1) 
+    // 8워드 크기의 힙 생성, free_listp에 힙의 시작 주소값 할당(가용 블록만 추적)
         return -1;
-    PUT(heap_listp, 0);
-    // Alignment padding
-    PUT(heap_listp + (1*WSIZE), PACK(DSIZE, 1));
-    // Prologue header
-    PUT(heap_listp + (2*WSIZE), PACK(DSIZE, 1));
-    // Prologue footer
-    PUT(heap_listp + (3*WSIZE), PACK(0, 1));
-    // Epilogue header
-    heap_listp += (2*WSIZE);
+    PUT(free_listp, 0);                                
+    // 정렬 패딩
+    PUT(free_listp + (1 * WSIZE), PACK(2 * WSIZE, 1)); 
+    // 프롤로그 Header
+    PUT(free_listp + (2 * WSIZE), PACK(2 * WSIZE, 1)); 
+    // 프롤로그 Footer
+    PUT(free_listp + (3 * WSIZE), PACK(4 * WSIZE, 0)); 
+    // 첫 가용 블록의 헤더
+    PUT(free_listp + (4 * WSIZE), NULL);               
+    // 이전 가용 블록의 주소
+    PUT(free_listp + (5 * WSIZE), NULL);               
+    // 다음 가용 블록의 주소
+    PUT(free_listp + (6 * WSIZE), PACK(4 * WSIZE, 0)); 
+    // 첫 가용 블록의 푸터
+    PUT(free_listp + (7 * WSIZE), PACK(0, 1));         
+    // 에필로그 Header: 프로그램이 할당한 마지막 블록의 뒤에 위치하며, 블록이 할당되지 않은 상태를 나타냄
 
-    /* Extend the empty heap with a free block of CHUNKSIZE bytes */
-    if (extend_heap(CHUNKSIZE/WSIZE) == NULL)
+    free_listp += (4 * WSIZE); // 첫번째 가용 블록의 bp
+
+    // 힙을 CHUNKSIZE bytes로 확장
+    if (extend_heap(CHUNKSIZE / WSIZE) == NULL)
         return -1;
+
     return 0;
 }
 
@@ -164,25 +176,15 @@ int mm_init(void)
 
 static void *find_fit(size_t asize) 
 {
-    // char *bp;
-    // bp = mem_heap_lo() + (2*WSIZE);
-    // NEXT_BLKP(bp);
-    // while (GET_ALLOC(HDRP(bp)) == 1) {
-    //     if (NEXT_BLKP(bp) == -1) {
-    //         if (extend_heap(CHUNKSIZE/WSIZE) == NULL)
-    //             return -1;
-    //     }
-    //     NEXT_BLKP(bp);
-    // }
-    // return bp;
-
-    // First-fit search
-    void *bp = mem_heap_lo() + 2 * WSIZE; // 첫번째 블록(주소: 힙의 첫 부분 + 8bytes)부터 탐색 시작
-    while (GET_SIZE(HDRP(bp)) > 0)
+    void *bp = free_listp;
+    while (bp != NULL) 
+    // 다음 가용 블럭이 있는 동안 반복
     {
-        if (!GET_ALLOC(HDRP(bp)) && (asize <= GET_SIZE(HDRP(bp)))) // 가용 상태이고, 사이즈가 적합하면
-            return bp;                                             // 해당 블록 포인터 리턴
-        bp = NEXT_BLKP(bp);                                        // 조건에 맞지 않으면 다음 블록으로 이동해서 탐색을 이어감
+        if ((asize <= GET_SIZE(HDRP(bp)))) 
+        // 적합한 사이즈의 블록을 찾으면 반환
+            return bp;
+        bp = GET_SUCC(bp); 
+        // 다음 가용 블록으로 이동
     }
     return NULL;
 }
@@ -195,7 +197,6 @@ static void place(char *bp, size_t asize)
     // header_bp = PUT(header_bp, PACK(asize, 1));
     // footer_bp = FTRP(bp);
     // footer_bp = PUT(footer_bp, PACK(asize, 1));
-    // return;
 
     size_t csize = GET_SIZE(HDRP(bp)); // 현재 블록의 크기
 
